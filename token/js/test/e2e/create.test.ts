@@ -1,4 +1,5 @@
-import { Connection, Keypair, PublicKey, Signer } from '@solana/web3.js';
+import type { Connection, PublicKey, Signer } from '@solana/web3.js';
+import { Keypair } from '@solana/web3.js';
 
 import chai, { expect } from 'chai';
 import chaiAsPromised from 'chai-as-promised';
@@ -9,6 +10,7 @@ import {
     createMint,
     getMint,
     createAccount,
+    createAssociatedTokenAccountIdempotent,
     getAccount,
     getAssociatedTokenAddress,
 } from '../../src';
@@ -141,5 +143,17 @@ describe('createAccount', () => {
                     TEST_PROGRAM_ID
                 )
             ).to.be.rejected;
+
+            // when creating again but with idempotent mode, TX should not throw error
+            return expect(
+                createAssociatedTokenAccountIdempotent(
+                    connection,
+                    payer,
+                    mint,
+                    owner.publicKey,
+                    undefined,
+                    TEST_PROGRAM_ID
+                )
+            ).to.be.fulfilled;
         });
 });

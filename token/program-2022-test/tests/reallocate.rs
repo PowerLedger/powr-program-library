@@ -1,4 +1,4 @@
-#![cfg(feature = "test-bpf")]
+#![cfg(feature = "test-sbf")]
 
 mod program_test;
 use {
@@ -28,8 +28,9 @@ async fn reallocate() {
     let error = token
         .reallocate(
             token.get_address(),
-            &mint_authority,
+            &mint_authority.pubkey(),
             &[ExtensionType::ImmutableOwner],
+            &[&mint_authority],
         )
         .await
         .unwrap_err();
@@ -42,14 +43,20 @@ async fn reallocate() {
 
     // create account just large enough for base
     let alice_account = Keypair::new();
-    let alice_account = token
+    token
         .create_auxiliary_token_account(&alice_account, &alice.pubkey())
         .await
         .unwrap();
+    let alice_account = alice_account.pubkey();
 
     // reallocate fails on invalid extension type
     let error = token
-        .reallocate(&alice_account, &alice, &[ExtensionType::MintCloseAuthority])
+        .reallocate(
+            &alice_account,
+            &alice.pubkey(),
+            &[ExtensionType::MintCloseAuthority],
+            &[&alice],
+        )
         .await
         .unwrap_err();
     assert_eq!(
@@ -66,8 +73,9 @@ async fn reallocate() {
     let error = token
         .reallocate(
             &alice_account,
-            &mint_authority,
+            &mint_authority.pubkey(),
             &[ExtensionType::ImmutableOwner],
+            &[&mint_authority],
         )
         .await
         .unwrap_err();
@@ -83,7 +91,12 @@ async fn reallocate() {
 
     // reallocate succeeds
     token
-        .reallocate(&alice_account, &alice, &[ExtensionType::ImmutableOwner])
+        .reallocate(
+            &alice_account,
+            &alice.pubkey(),
+            &[ExtensionType::ImmutableOwner],
+            &[&alice],
+        )
         .await
         .unwrap();
     let account = token.get_account(&alice_account).await.unwrap();
@@ -95,7 +108,12 @@ async fn reallocate() {
     // reallocate succeeds with noop if account is already large enough
     token.get_new_latest_blockhash().await.unwrap();
     token
-        .reallocate(&alice_account, &alice, &[ExtensionType::ImmutableOwner])
+        .reallocate(
+            &alice_account,
+            &alice.pubkey(),
+            &[ExtensionType::ImmutableOwner],
+            &[&alice],
+        )
         .await
         .unwrap();
     let account = token.get_account(&alice_account).await.unwrap();
@@ -108,13 +126,14 @@ async fn reallocate() {
     token
         .reallocate(
             &alice_account,
-            &alice,
+            &alice.pubkey(),
             &[
                 ExtensionType::ImmutableOwner,
                 ExtensionType::ImmutableOwner,
                 ExtensionType::TransferFeeAmount,
                 ExtensionType::TransferFeeAmount,
             ],
+            &[&alice],
         )
         .await
         .unwrap();
@@ -144,14 +163,20 @@ async fn reallocate_without_current_extension_knowledge() {
 
     // create account just large enough for TransferFeeAmount extension
     let alice_account = Keypair::new();
-    let alice_account = token
+    token
         .create_auxiliary_token_account(&alice_account, &alice.pubkey())
         .await
         .unwrap();
+    let alice_account = alice_account.pubkey();
 
     // reallocate resizes account to accommodate new and existing extensions
     token
-        .reallocate(&alice_account, &alice, &[ExtensionType::ImmutableOwner])
+        .reallocate(
+            &alice_account,
+            &alice.pubkey(),
+            &[ExtensionType::ImmutableOwner],
+            &[&alice],
+        )
         .await
         .unwrap();
     let account = token.get_account(&alice_account).await.unwrap();
