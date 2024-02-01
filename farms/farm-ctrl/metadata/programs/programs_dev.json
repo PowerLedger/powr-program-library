@@ -132,7 +132,7 @@
       "name": "SplToken",
       "description": "",
       "program_type": "System",
-      "address": "Token1ZAxcjfmf3ANqs2HEiWXYWHUbkhGynugUn4Joo"
+      "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
     },
     {
       "name": "SplTokenMetadata",
@@ -150,7 +150,7 @@
       "name": "SplTokenMint",
       "description": "",
       "program_type": "System",
-      "address": "Powr111111111111111111111111111111111111112"
+      "address": "So11111111111111111111111111111111111111112"
     },
     {
       "name": "AssociatedToken",

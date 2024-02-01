@@ -1,5 +1,5 @@
 // Mark this test as BPF-only due to current `ProgramTest` limitations when CPIing into the system program
-#![cfg(feature = "test-bpf")]
+#![cfg(feature = "test-sbf")]
 
 mod program_test;
 
@@ -17,7 +17,9 @@ use {
     },
     spl_token_2022::{
         error::TokenError,
-        extension::{transfer_fee, ExtensionType, StateWithExtensionsOwned},
+        extension::{
+            transfer_fee, BaseStateWithExtensions, ExtensionType, StateWithExtensionsOwned,
+        },
         state::{Account, Mint},
     },
 };

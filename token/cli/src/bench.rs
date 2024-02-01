@@ -168,7 +168,7 @@ impl BenchSubCommand for App<'_, '_> {
 pub(crate) async fn bench_process_command(
     matches: &ArgMatches<'_>,
     config: &Config<'_>,
-    mut signers: Vec<Box<dyn Signer>>,
+    mut signers: Vec<Arc<dyn Signer>>,
     wallet_manager: &mut Option<Arc<RemoteWalletManager>>,
 ) -> CommandResult {
     assert!(!config.sign_only);
@@ -273,7 +273,7 @@ async fn get_valid_mint_program_id(
 
 async fn command_create_accounts(
     config: &Config<'_>,
-    signers: Vec<Box<dyn Signer>>,
+    signers: Vec<Arc<dyn Signer>>,
     token: &Pubkey,
     n: usize,
     owner: &Pubkey,
@@ -302,7 +302,7 @@ async fn command_create_accounts(
                 messages.push(Message::new(
                     &[
                         system_instruction::create_account_with_seed(
-                            &config.fee_payer,
+                            &config.fee_payer()?.pubkey(),
                             address,
                             owner,
                             seed,
@@ -312,7 +312,7 @@ async fn command_create_accounts(
                         ),
                         instruction::initialize_account(&program_id, address, token, owner)?,
                     ],
-                    Some(&config.fee_payer),
+                    Some(&config.fee_payer()?.pubkey()),
                 ));
             }
         }
@@ -323,7 +323,7 @@ async fn command_create_accounts(
 
 async fn command_close_accounts(
     config: &Config<'_>,
-    signers: Vec<Box<dyn Signer>>,
+    signers: Vec<Arc<dyn Signer>>,
     token: &Pubkey,
     n: usize,
     owner: &Pubkey,
@@ -358,7 +358,7 @@ async fn command_close_accounts(
                                     owner,
                                     &[],
                                 )?],
-                                Some(&config.fee_payer),
+                                Some(&config.fee_payer()?.pubkey()),
                             ));
                         }
                     }
@@ -376,7 +376,7 @@ async fn command_close_accounts(
 #[allow(clippy::too_many_arguments)]
 async fn command_deposit_into_or_withdraw_from(
     config: &Config<'_>,
-    signers: Vec<Box<dyn Signer>>,
+    signers: Vec<Arc<dyn Signer>>,
     token: &Pubkey,
     n: usize,
     owner: &Pubkey,
@@ -415,7 +415,7 @@ async fn command_deposit_into_or_withdraw_from(
                         amount,
                         mint_info.decimals,
                     )?],
-                    Some(&config.fee_payer),
+                    Some(&config.fee_payer()?.pubkey()),
                 ));
             } else {
                 eprintln!("Token account does not exist: {}", address)
@@ -430,23 +430,18 @@ async fn send_messages(
     config: &Config<'_>,
     messages: &[Message],
     mut lamports_required: u64,
-    signers: Vec<Box<dyn Signer>>,
+    signers: Vec<Arc<dyn Signer>>,
 ) -> Result<(), Error> {
     if messages.is_empty() {
         println!("Nothing to do");
         return Ok(());
     }
 
-    let (_blockhash, fee_calculator, _last_valid_block_height) = config
-        .rpc_client
-        .get_recent_blockhash_with_commitment(config.rpc_client.commitment())
-        .await?
-        .value;
-
-    lamports_required += messages
-        .iter()
-        .map(|message| fee_calculator.calculate_fee(message))
-        .sum::<u64>();
+    let blockhash = config.rpc_client.get_latest_blockhash().await?;
+    let mut message = messages[0].clone();
+    message.recent_blockhash = blockhash;
+    lamports_required +=
+        config.rpc_client.get_fee_for_message(&message).await? * messages.len() as u64;
 
     println!(
         "Sending {:?} messages for ~{}",

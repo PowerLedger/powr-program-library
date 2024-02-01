@@ -18,7 +18,7 @@ use solana_program::{
 
 /// Governance Realm Account
 /// Account PDA seeds" ['governance', name]
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct RealmV1 {
     /// Governance account type
     pub account_type: GovernanceAccountType,
@@ -53,7 +53,7 @@ impl IsInitialized for RealmV1 {
 
 /// Governance Token Owner Record
 /// Account PDA seeds: ['governance', realm, token_mint, token_owner ]
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct TokenOwnerRecordV1 {
     /// Governance account type
     pub account_type: GovernanceAccountType,
@@ -74,20 +74,19 @@ pub struct TokenOwnerRecordV1 {
 
     /// The number of votes cast by TokenOwner but not relinquished yet
     /// Every time a vote is cast this number is increased and it's always decreased when relinquishing a vote regardless of the vote state
-    pub unrelinquished_votes_count: u32,
-
-    /// The total number of votes cast by the TokenOwner
-    /// If TokenOwner withdraws vote while voting is still in progress total_votes_count is decreased  and the vote doesn't count towards the total
-    pub total_votes_count: u32,
+    pub unrelinquished_votes_count: u64,
 
     /// The number of outstanding proposals the TokenOwner currently owns
     /// The count is increased when TokenOwner creates a proposal
     /// and decreased  once it's either voted on (Succeeded or Defeated) or Cancelled
-    /// By default it's restricted to 1 outstanding Proposal per token owner
+    /// By default it's restricted to 10 outstanding Proposal per token owner
     pub outstanding_proposal_count: u8,
 
+    /// Version introduced in program V3
+    pub version: u8,
+
     /// Reserved space for future versions
-    pub reserved: [u8; 7],
+    pub reserved: [u8; 6],
 
     /// A single account that is allowed to operate governance with the deposited governing tokens
     /// It can be delegated to by the governing_token_owner or current governance_delegate
@@ -101,7 +100,7 @@ impl IsInitialized for TokenOwnerRecordV1 {
 }
 
 /// Governance Account
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct GovernanceV1 {
     /// Account type. It can be Uninitialized, Governance, ProgramGovernance, TokenGovernance or MintGovernance
     pub account_type: GovernanceAccountType,
@@ -125,14 +124,6 @@ pub struct GovernanceV1 {
 
     /// Governance config
     pub config: GovernanceConfig,
-
-    /// Reserved space for future versions
-    pub reserved: [u8; 6],
-
-    /// The number of proposals in voting state in the Governance
-    /// Note: This is field introduced in V2 but it took space from reserved
-    /// and we have preserve it for V1 serialization roundtrip
-    pub voting_proposal_count: u16,
 }
 
 /// Checks if the given account type is one of the Governance V1 account types
@@ -160,7 +151,8 @@ pub fn is_governance_v1_account_type(account_type: &GovernanceAccountType) -> bo
         | GovernanceAccountType::ProposalTransactionV2
         | GovernanceAccountType::VoteRecordV1
         | GovernanceAccountType::VoteRecordV2
-        | GovernanceAccountType::ProgramMetadata => false,
+        | GovernanceAccountType::ProgramMetadata
+        | GovernanceAccountType::ProposalDeposit => false,
     }
 }
 
@@ -171,7 +163,7 @@ impl IsInitialized for GovernanceV1 {
 }
 
 /// Governance Proposal
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct ProposalV1 {
     /// Governance account type
     pub account_type: GovernanceAccountType,
@@ -260,7 +252,7 @@ impl IsInitialized for ProposalV1 {
 }
 
 /// Account PDA seeds: ['governance', proposal, signatory]
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct SignatoryRecordV1 {
     /// Governance account type
     pub account_type: GovernanceAccountType,
@@ -282,7 +274,7 @@ impl IsInitialized for SignatoryRecordV1 {
 }
 
 /// Proposal instruction V1
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct ProposalInstructionV1 {
     /// Governance Account type
     pub account_type: GovernanceAccountType,
@@ -293,7 +285,7 @@ pub struct ProposalInstructionV1 {
     /// Unique instruction index within it's parent Proposal
     pub instruction_index: u16,
 
-    /// Minimum waiting time in seconds for the  instruction to be executed once proposal is voted on
+    /// Minimum waiting time in seconds for the instruction to be executed once proposal is voted on
     pub hold_up_time: u32,
 
     /// Instruction to execute
@@ -315,7 +307,7 @@ impl IsInitialized for ProposalInstructionV1 {
 }
 
 /// Vote  with number of votes
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub enum VoteWeightV1 {
     /// Yes vote
     Yes(u64),
@@ -325,7 +317,7 @@ pub enum VoteWeightV1 {
 }
 
 /// Proposal VoteRecord
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct VoteRecordV1 {
     /// Governance account type
     pub account_type: GovernanceAccountType,

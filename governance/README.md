@@ -154,7 +154,7 @@ during the voting period but still reaches the required Yes vote threshold it ca
 using FinalizeVote instruction.
 Once all Proposal transactions are executed the Proposal enters Completed state.
 
-In the Executing state an instruction can be run by any one at any time after the `instruction_hold_up_time` period has
+In the Executing state an instruction can be run by any one at any time after the `hold_up_time` period has
 transpired.
 
 ### ProposalTransaction
@@ -197,3 +197,8 @@ the DAO until the token is distributed.
 ### Proposal Workflow
 
 ![Proposal Workflow](./resources/governance-workflow.jpg)
+
+## Audit
+
+The repository [README](https://github.com/solana-labs/solana-program-library#audits)
+contains information about program audits.

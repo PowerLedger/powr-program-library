@@ -383,9 +383,9 @@ import {clusterApiUrl, Connection, PublicKey} from "@solana/web3.js";
 
   console.log("Token                                         Balance");
   console.log("------------------------------------------------------------");
-  tokenAccounts.value.forEach((e) => {
-    const accountInfo = AccountLayout.decode(e.account.data);
-    console.log(`${new PublicKey(accountInfo.mint)}   ${accountInfo.amount}`);
+  tokenAccounts.value.forEach((tokenAccount) => {
+    const accountData = AccountLayout.decode(tokenAccount.account.data);
+    console.log(`${new PublicKey(accountData.mint)}   ${accountData.amount}`);
   })
 
 })();
@@ -1176,8 +1176,8 @@ try {
     multisigKey,
     1
   )
-} catch (e) {
-  console.log(e);
+} catch (error) {
+  console.log(error);
 }
 // Error: Signature verification failed
 ```
@@ -1525,7 +1525,7 @@ curl http://api.mainnet-beta.solana.com -X POST -H "Content-Type: application/js
     "id": 1,
     "method": "getProgramAccounts",
     "params": [
-      "Token1ZAxcjfmf3ANqs2HEiWXYWHUbkhGynugUn4Joo",
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
       {
         "encoding": "jsonParsed",
         "filters": [
@@ -1561,7 +1561,7 @@ curl http://api.mainnet-beta.solana.com -X POST -H "Content-Type: application/js
     "id": 1,
     "method": "getProgramAccounts",
     "params": [
-      "Token1ZAxcjfmf3ANqs2HEiWXYWHUbkhGynugUn4Joo",
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
       {
         "encoding": "jsonParsed",
         "filters": [
@@ -1690,7 +1690,7 @@ called from other programs that interact with the Token Program's interface.
 
 Accounts containing wrapped SOL are associated with a specific Mint called the
 "Native Mint" using the public key
-`Powr111111111111111111111111111111111111112`.
+`So11111111111111111111111111111111111111112`.
 
 These accounts have a few unique behaviors
 

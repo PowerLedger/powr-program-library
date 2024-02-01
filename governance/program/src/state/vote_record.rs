@@ -4,11 +4,10 @@ use borsh::maybestd::io::Write;
 
 use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use solana_program::account_info::AccountInfo;
-use solana_program::borsh::try_from_slice_unchecked;
 
 use solana_program::program_error::ProgramError;
 use solana_program::{program_pack::IsInitialized, pubkey::Pubkey};
-use spl_governance_tools::account::{get_account_data, AccountMaxSize};
+use spl_governance_tools::account::{get_account_data, get_account_type, AccountMaxSize};
 
 use crate::error::GovernanceError;
 
@@ -25,10 +24,10 @@ use crate::state::{
 /// Voter choice for a proposal option
 /// In the current version only 1) Single choice and 2) Multiple choices proposals are supported
 /// In the future versions we can add support for 1) Quadratic voting, 2) Ranked choice voting and 3) Weighted voting
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct VoteChoice {
     /// The rank given to the choice by voter
-    /// Note: The filed is not used in the current version
+    /// Note: The field is not used in the current version
     pub rank: u8,
 
     /// The voter's weight percentage given by the voter to the choice
@@ -47,7 +46,7 @@ impl VoteChoice {
 }
 
 /// User's vote
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub enum Vote {
     /// Vote approving choices
     Approve(Vec<VoteChoice>),
@@ -64,7 +63,7 @@ pub enum Vote {
 }
 
 /// VoteKind defines the type of the vote being cast
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub enum VoteKind {
     /// Electorate vote is cast by the voting population identified by governing_token_mint
     /// Approve, Deny and Abstain votes are Electorate votes
@@ -83,7 +82,7 @@ pub fn get_vote_kind(vote: &Vote) -> VoteKind {
 }
 
 /// Proposal VoteRecord
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct VoteRecordV2 {
     /// Governance account type
     pub account_type: GovernanceAccountType,
@@ -105,7 +104,7 @@ pub struct VoteRecordV2 {
     pub vote: Vote,
 
     /// Reserved space for versions v2 and onwards
-    /// Note: This space won't be available to v1 accounts until runtime supports resizing
+    /// Note: V1 accounts must be resized before using this space
     pub reserved_v2: [u8; 8],
 }
 
@@ -166,8 +165,7 @@ pub fn get_vote_record_data(
     program_id: &Pubkey,
     vote_record_info: &AccountInfo,
 ) -> Result<VoteRecordV2, ProgramError> {
-    let account_type: GovernanceAccountType =
-        try_from_slice_unchecked(&vote_record_info.data.borrow())?;
+    let account_type: GovernanceAccountType = get_account_type(program_id, vote_record_info)?;
 
     // If the account is V1 version then translate to V2
     if account_type == GovernanceAccountType::VoteRecordV1 {

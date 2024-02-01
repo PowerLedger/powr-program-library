@@ -3,7 +3,7 @@
 use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 
 /// Defines all Governance accounts types
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub enum GovernanceAccountType {
     /// Default uninitialized account state
     Uninitialized,
@@ -60,7 +60,7 @@ pub enum GovernanceAccountType {
     /// Top level aggregation for governances with Community Token (and optional Council Token)
     /// V2 adds the following fields:
     /// 1) use_community_voter_weight_addin and use_max_community_voter_weight_addin to RealmConfig
-    /// 2) voting_proposal_count
+    /// 2) voting_proposal_count / replaced with legacy1 in V3
     /// 3) extra reserved space reserved_v2
     RealmV2,
 
@@ -87,6 +87,9 @@ pub enum GovernanceAccountType {
     /// Proposal Signatory account
     /// V2 adds extra reserved space reserved_v2
     SignatoryRecordV2,
+
+    /// Proposal deposit account
+    ProposalDeposit,
 }
 
 impl Default for GovernanceAccountType {
@@ -96,7 +99,7 @@ impl Default for GovernanceAccountType {
 }
 
 /// What state a Proposal is in
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub enum ProposalState {
     /// Draft - Proposal enters Draft state when it's created
     Draft,
@@ -141,7 +144,7 @@ impl Default for ProposalState {
 /// The type of the vote threshold used to resolve a vote on a Proposal
 ///
 /// Note: In the current version only YesVotePercentage and Disabled thresholds are supported
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub enum VoteThreshold {
     /// Voting threshold of Yes votes in % required to tip the vote (Approval Quorum)
     /// It's the percentage of tokens out of the entire pool of governance tokens eligible to vote
@@ -173,7 +176,7 @@ pub enum VoteThreshold {
 /// The type of vote tipping to use on a Proposal.
 ///
 /// Vote tipping means that under some conditions voting will complete early.
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub enum VoteTipping {
     /// Tip when there is no way for another option to win and the vote threshold
     /// has been reached. This ignores voters withdrawing their votes.
@@ -192,7 +195,7 @@ pub enum VoteTipping {
 }
 
 /// The status of instruction execution
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub enum TransactionExecutionStatus {
     /// Transaction was not executed yet
     None,
@@ -205,7 +208,7 @@ pub enum TransactionExecutionStatus {
 }
 
 /// Transaction execution flags defining how instructions are executed for a Proposal
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub enum InstructionExecutionFlags {
     /// No execution flags are specified
     /// Instructions can be executed individually, in any order, as soon as they hold_up time expires
@@ -224,22 +227,21 @@ pub enum InstructionExecutionFlags {
 
 /// The source of max vote weight used for voting
 /// Values below 100% mint supply can be used when the governing token is fully minted but not distributed yet
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
-pub enum MintMaxVoteWeightSource {
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
+pub enum MintMaxVoterWeightSource {
     /// Fraction (10^10 precision) of the governing mint supply is used as max vote weight
     /// The default is 100% (10^10) to use all available mint supply for voting
     SupplyFraction(u64),
 
-    /// Absolute value, irrelevant of the actual mint supply, is used as max vote weight
-    /// Note: this option is not implemented in the current version
+    /// Absolute value, irrelevant of the actual mint supply, is used as max voter weight
     Absolute(u64),
 }
 
-impl MintMaxVoteWeightSource {
+impl MintMaxVoterWeightSource {
     /// Base for mint supply fraction calculation
     pub const SUPPLY_FRACTION_BASE: u64 = 10_000_000_000;
 
     /// 100% of mint supply
-    pub const FULL_SUPPLY_FRACTION: MintMaxVoteWeightSource =
-        MintMaxVoteWeightSource::SupplyFraction(MintMaxVoteWeightSource::SUPPLY_FRACTION_BASE);
+    pub const FULL_SUPPLY_FRACTION: MintMaxVoterWeightSource =
+        MintMaxVoterWeightSource::SupplyFraction(MintMaxVoterWeightSource::SUPPLY_FRACTION_BASE);
 }

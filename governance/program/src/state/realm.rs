@@ -6,29 +6,31 @@ use std::slice::Iter;
 use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use solana_program::{
     account_info::{next_account_info, AccountInfo},
-    borsh::try_from_slice_unchecked,
     program_error::ProgramError,
     program_pack::IsInitialized,
     pubkey::Pubkey,
 };
 use spl_governance_addin_api::voter_weight::VoterWeightAction;
 use spl_governance_tools::account::{
-    assert_is_valid_account_of_types, get_account_data, AccountMaxSize,
+    assert_is_valid_account_of_types, get_account_data, get_account_type, AccountMaxSize,
 };
 
 use crate::{
     error::GovernanceError,
     state::{
-        enums::{GovernanceAccountType, MintMaxVoteWeightSource},
+        enums::{GovernanceAccountType, MintMaxVoterWeightSource},
         legacy::RealmV1,
+        realm_config::GoverningTokenType,
         token_owner_record::get_token_owner_record_data_for_realm,
         vote_record::VoteKind,
     },
     PROGRAM_AUTHORITY_SEED,
 };
 
+use crate::state::realm_config::get_realm_config_data_for_realm;
+
 /// Realm Config instruction args
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct RealmConfigArgs {
     /// Indicates whether council_mint should be used
     /// If yes then council_mint account must also be passed to the instruction
@@ -38,19 +40,47 @@ pub struct RealmConfigArgs {
     pub min_community_weight_to_create_governance: u64,
 
     /// The source used for community mint max vote weight source
-    pub community_mint_max_vote_weight_source: MintMaxVoteWeightSource,
+    pub community_mint_max_voter_weight_source: MintMaxVoterWeightSource,
 
-    /// Indicates whether an external addin program should be used to provide community voters weights
+    /// Community token config args
+    pub community_token_config_args: GoverningTokenConfigArgs,
+
+    /// Council token config args
+    pub council_token_config_args: GoverningTokenConfigArgs,
+}
+
+/// Realm Config instruction args
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema, Default)]
+pub struct GoverningTokenConfigArgs {
+    /// Indicates whether an external addin program should be used to provide voters weights
     /// If yes then the voters weight program account must be passed to the instruction
-    pub use_community_voter_weight_addin: bool,
+    pub use_voter_weight_addin: bool,
 
-    /// Indicates whether an external addin program should be used to provide max voters weight for the community mint
+    /// Indicates whether an external addin program should be used to provide max voters weight for the token
     /// If yes then the max voter weight program account must be passed to the instruction
-    pub use_max_community_voter_weight_addin: bool,
+    pub use_max_voter_weight_addin: bool,
+
+    /// Governing token type defines how the token is used for governance
+    pub token_type: GoverningTokenType,
+}
+
+/// Realm Config instruction args with account parameters
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema, Default)]
+pub struct GoverningTokenConfigAccountArgs {
+    /// Specifies an external plugin program which should be used to provide voters weights
+    /// for the given governing token
+    pub voter_weight_addin: Option<Pubkey>,
+
+    /// Specifies an external an external plugin program should be used to provide max voters weight
+    /// for the given governing token
+    pub max_voter_weight_addin: Option<Pubkey>,
+
+    /// Governing token type defines how the token is used for governance power
+    pub token_type: GoverningTokenType,
 }
 
 /// SetRealmAuthority instruction action
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub enum SetRealmAuthorityAction {
     /// Sets realm authority without any checks
     /// Uncheck option allows to set the realm authority to non governance accounts
@@ -66,13 +96,17 @@ pub enum SetRealmAuthorityAction {
 }
 
 /// Realm Config defining Realm parameters.
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct RealmConfig {
-    /// Indicates whether an external addin program should be used to provide voters weights for the community mint
-    pub use_community_voter_weight_addin: bool,
+    /// Legacy field introduced and used in V2 as use_community_voter_weight_addin: bool
+    /// If the field is going to be reused in future version it must be taken under consideration
+    /// that for some Realms it might be already set to 1
+    pub legacy1: u8,
 
-    /// Indicates whether an external addin program should be used to provide max voter weight for the community mint
-    pub use_max_community_voter_weight_addin: bool,
+    /// Legacy field introduced and used in V2 as use_max_community_voter_weight_addin: bool
+    /// If the field is going to be reused in future version it must be taken under consideration
+    /// that for some Realms it might be already set to 1
+    pub legacy2: u8,
 
     /// Reserved space for future versions
     pub reserved: [u8; 6],
@@ -81,7 +115,7 @@ pub struct RealmConfig {
     pub min_community_weight_to_create_governance: u64,
 
     /// The source used for community mint max vote weight source
-    pub community_mint_max_vote_weight_source: MintMaxVoteWeightSource,
+    pub community_mint_max_voter_weight_source: MintMaxVoterWeightSource,
 
     /// Optional council mint
     pub council_mint: Option<Pubkey>,
@@ -89,7 +123,7 @@ pub struct RealmConfig {
 
 /// Governance Realm Account
 /// Account PDA seeds" ['governance', name]
-#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct RealmV2 {
     /// Governance account type
     pub account_type: GovernanceAccountType,
@@ -103,8 +137,10 @@ pub struct RealmV2 {
     /// Reserved space for future versions
     pub reserved: [u8; 6],
 
-    /// The number of proposals in voting state in the Realm
-    pub voting_proposal_count: u16,
+    /// Legacy field not used since program V3 any longer
+    /// Note: If the field is going to be reused in future version it must be taken under consideration
+    /// that for some Realms it might be already set to none zero because it was used as voting_proposal_count before
+    pub legacy1: u16,
 
     /// Realm authority. The authority must sign transactions which update the realm config
     /// The authority should be transferred to Realm Governance to make the Realm self governed through proposals
@@ -114,7 +150,7 @@ pub struct RealmV2 {
     pub name: String,
 
     /// Reserved space for versions v2 and onwards
-    /// Note: This space won't be available to v1 accounts until runtime supports resizing
+    /// Note: V1 accounts must be resized before using this space
     pub reserved_v2: [u8; 128],
 }
 
@@ -154,7 +190,8 @@ pub fn is_realm_account_type(account_type: &GovernanceAccountType) -> bool {
         | GovernanceAccountType::ProposalTransactionV2
         | GovernanceAccountType::VoteRecordV1
         | GovernanceAccountType::VoteRecordV2
-        | GovernanceAccountType::ProgramMetadata => false,
+        | GovernanceAccountType::ProgramMetadata
+        | GovernanceAccountType::ProposalDeposit => false,
     }
 }
 
@@ -191,9 +228,7 @@ impl RealmV2 {
             VoteKind::Veto => {
                 // When Community veto Council proposal then return council_token_mint as the Proposal governing_token_mint
                 if self.community_mint == *vote_governing_token_mint {
-                    // Community Veto is not supported in the current version
-                    return Err(GovernanceError::GoverningTokenMintNotAllowedToVote.into());
-                    //return Ok(self.config.council_mint.unwrap());
+                    return Ok(self.config.council_mint.unwrap());
                 }
 
                 // When Council veto Community proposal then return community_token_mint as the Proposal governing_token_mint
@@ -251,13 +286,13 @@ impl RealmV2 {
         token_owner_record_data.assert_token_owner_or_delegate_is_signer(create_authority_info)?;
 
         let realm_config_info = next_account_info(account_info_iter)?;
+        let realm_config_data =
+            get_realm_config_data_for_realm(program_id, realm_config_info, realm)?;
 
         let voter_weight = token_owner_record_data.resolve_voter_weight(
-            program_id,
-            realm_config_info,
             account_info_iter,
-            realm,
             self,
+            &realm_config_data,
             VoterWeightAction::CreateGovernance,
             realm,
         )?;
@@ -284,7 +319,7 @@ impl RealmV2 {
                 community_mint: self.community_mint,
                 config: self.config,
                 reserved: self.reserved,
-                voting_proposal_count: self.voting_proposal_count,
+                voting_proposal_count: 0,
                 authority: self.authority,
                 name: self.name,
             };
@@ -309,7 +344,7 @@ pub fn get_realm_data(
     program_id: &Pubkey,
     realm_info: &AccountInfo,
 ) -> Result<RealmV2, ProgramError> {
-    let account_type: GovernanceAccountType = try_from_slice_unchecked(&realm_info.data.borrow())?;
+    let account_type: GovernanceAccountType = get_account_type(program_id, realm_info)?;
 
     // If the account is V1 version then translate to V2
     if account_type == GovernanceAccountType::RealmV1 {
@@ -320,7 +355,7 @@ pub fn get_realm_data(
             community_mint: realm_data_v1.community_mint,
             config: realm_data_v1.config,
             reserved: realm_data_v1.reserved,
-            voting_proposal_count: realm_data_v1.voting_proposal_count,
+            legacy1: 0,
             authority: realm_data_v1.authority,
             name: realm_data_v1.name,
             // Add the extra reserved_v2 padding
@@ -399,15 +434,19 @@ pub fn get_governing_token_holding_address(
 }
 
 /// Asserts given realm config args are correct
-pub fn assert_valid_realm_config_args(config_args: &RealmConfigArgs) -> Result<(), ProgramError> {
-    match config_args.community_mint_max_vote_weight_source {
-        MintMaxVoteWeightSource::SupplyFraction(fraction) => {
-            if !(1..=MintMaxVoteWeightSource::SUPPLY_FRACTION_BASE).contains(&fraction) {
-                return Err(GovernanceError::InvalidMaxVoteWeightSupplyFraction.into());
+pub fn assert_valid_realm_config_args(
+    realm_config_args: &RealmConfigArgs,
+) -> Result<(), ProgramError> {
+    match realm_config_args.community_mint_max_voter_weight_source {
+        MintMaxVoterWeightSource::SupplyFraction(fraction) => {
+            if !(1..=MintMaxVoterWeightSource::SUPPLY_FRACTION_BASE).contains(&fraction) {
+                return Err(GovernanceError::InvalidMaxVoterWeightSupplyFraction.into());
             }
         }
-        MintMaxVoteWeightSource::Absolute(_) => {
-            return Err(GovernanceError::MintMaxVoteWeightSourceNotSupported.into())
+        MintMaxVoterWeightSource::Absolute(value) => {
+            if value == 0 {
+                return Err(GovernanceError::InvalidMaxVoterWeightAbsoluteValue.into());
+            }
         }
     }
 
@@ -433,14 +472,14 @@ mod test {
             name: "test-realm".to_string(),
             config: RealmConfig {
                 council_mint: Some(Pubkey::new_unique()),
-                use_community_voter_weight_addin: false,
-                use_max_community_voter_weight_addin: false,
+                legacy1: 0,
+                legacy2: 0,
                 reserved: [0; 6],
-                community_mint_max_vote_weight_source: MintMaxVoteWeightSource::Absolute(100),
+                community_mint_max_voter_weight_source: MintMaxVoterWeightSource::Absolute(100),
                 min_community_weight_to_create_governance: 10,
             },
 
-            voting_proposal_count: 0,
+            legacy1: 0,
             reserved_v2: [0; 128],
         };
 
@@ -450,7 +489,7 @@ mod test {
     }
 
     /// Realm Config instruction args
-    #[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+    #[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
     pub struct RealmConfigArgsV1 {
         /// Indicates whether council_mint should be used
         /// If yes then council_mint account must also be passed to the instruction
@@ -460,11 +499,11 @@ mod test {
         pub min_community_weight_to_create_governance: u64,
 
         /// The source used for community mint max vote weight source
-        pub community_mint_max_vote_weight_source: MintMaxVoteWeightSource,
+        pub community_mint_max_voter_weight_source: MintMaxVoterWeightSource,
     }
 
     /// Instructions supported by the Governance program
-    #[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, BorshSchema)]
+    #[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize, BorshSchema)]
     pub enum GovernanceInstructionV1 {
         /// Creates Governance Realm account which aggregates governances for given Community Mint and optional Council Mint
         CreateRealm {
@@ -493,10 +532,10 @@ mod test {
             config_args: RealmConfigArgs {
                 use_council_mint: true,
                 min_community_weight_to_create_governance: 100,
-                community_mint_max_vote_weight_source:
-                    MintMaxVoteWeightSource::FULL_SUPPLY_FRACTION,
-                use_community_voter_weight_addin: false,
-                use_max_community_voter_weight_addin: false,
+                community_mint_max_voter_weight_source:
+                    MintMaxVoterWeightSource::FULL_SUPPLY_FRACTION,
+                community_token_config_args: GoverningTokenConfigArgs::default(),
+                council_token_config_args: GoverningTokenConfigArgs::default(),
             },
         };
 
@@ -513,8 +552,8 @@ mod test {
         if let GovernanceInstructionV1::CreateRealm { name, config_args } = create_realm_ix_v1 {
             assert_eq!("test-realm", name);
             assert_eq!(
-                MintMaxVoteWeightSource::FULL_SUPPLY_FRACTION,
-                config_args.community_mint_max_vote_weight_source
+                MintMaxVoterWeightSource::FULL_SUPPLY_FRACTION,
+                config_args.community_mint_max_voter_weight_source
             );
         } else {
             panic!("Can't deserialize v1 CreateRealm instruction from v2");

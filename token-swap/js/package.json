@@ -1,9 +1,9 @@
 {
   "name": "@solana/spl-token-swap",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "SPL Token Swap JavaScript API",
   "license": "MIT",
-  "author": "Solana Maintainers <maintainers@solana.foundation>",
+  "author": "Solana Labs Maintainers <maintainers@solanalabs.com>",
   "homepage": "https://solana.com/",
   "repository": {
     "type": "git",
@@ -35,7 +35,7 @@
     "start-with-test-validator": "start-server-and-test 'solana-test-validator --bpf-program SwapsVeCiPHMUAtzQWZw7RjsKjgCjhwU55QGu4U1Szw ../../target/deploy/spl_token_swap.so --reset --quiet' http://localhost:8899/health test",
     "lint": "npm run pretty && eslint --max-warnings 0 .",
     "lint:fix": "npm run pretty:fix && eslint . --fix",
-    "build:program": "cargo build-bpf --manifest-path ../program/Cargo.toml",
+    "build:program": "cargo build-sbf --manifest-path ../program/Cargo.toml",
     "pretty": "prettier --check '{,???/**/}*.ts'",
     "pretty:fix": "prettier --write '{,???/**/}*.ts'"
   },
@@ -48,7 +48,7 @@
   "devDependencies": {
     "@solana/spl-token": "0.1.8",
     "@types/bn.js": "^5.1.0",
-    "eslint": "^7.9.0",
+    "eslint": "^8.31.0",
     "eslint-plugin-import": "^2.22.0",
     "prettier": "^2.1.2",
     "start-server-and-test": "^1.11.6",

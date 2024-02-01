@@ -24,7 +24,16 @@ solana_dir=$(cd "$solana_dir" && pwd)
 cd "$(dirname "$0")"
 
 source "$solana_dir"/scripts/read-cargo-variable.sh
-solana_ver=$(readCargoVariable version "$solana_dir"/sdk/Cargo.toml)
+
+# The toolchain file only exists in version >= 1.15
+toolchain_file="$solana_dir"/rust-toolchain.toml
+if [[ -f "$toolchain_file" ]]; then
+  cp "$toolchain_file" .
+fi
+
+# get version from Cargo.toml first. if it is empty, get it from other places.
+solana_ver="$(readCargoVariable version "$solana_dir"/Cargo.toml)"
+solana_ver=${solana_ver:-$(readCargoVariable version "$solana_dir"/sdk/Cargo.toml)}
 
 crates_map=()
 crates_map+=("solana-account-decoder account-decoder")
@@ -32,6 +41,7 @@ crates_map+=("solana-banks-client banks-client")
 crates_map+=("solana-banks-server banks-server")
 crates_map+=("solana-bpf-loader-program programs/bpf_loader")
 crates_map+=("solana-clap-utils clap-utils")
+crates_map+=("solana-clap-v3-utils clap-v3-utils")
 crates_map+=("solana-cli-config cli-config")
 crates_map+=("solana-cli-output cli-output")
 crates_map+=("solana-client client")
