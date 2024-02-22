@@ -37,13 +37,17 @@ use solana_sdk::{
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use spl_token_2022::{
     extension::{
+        confidential_transfer::ConfidentialTransferMint,
+        confidential_transfer_fee::ConfidentialTransferFeeConfig,
         cpi_guard::CpiGuard,
         default_account_state::DefaultAccountState,
         interest_bearing_mint::InterestBearingConfig,
         memo_transfer::MemoTransfer,
+        metadata_pointer::MetadataPointer,
         mint_close_authority::MintCloseAuthority,
         permanent_delegate::PermanentDelegate,
         transfer_fee::{TransferFeeAmount, TransferFeeConfig},
+        transfer_hook::TransferHook,
         BaseStateWithExtensions, ExtensionType, StateWithExtensionsOwned,
     },
     instruction::*,
@@ -142,6 +146,7 @@ pub enum CommandName {
     UpdateDefaultAccountState,
     WithdrawWithheldTokens,
     SetTransferFee,
+    WithdrawExcessLamports,
 }
 impl fmt::Display for CommandName {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -177,8 +182,6 @@ pub fn mint_address_arg<'a, 'b>() -> Arg<'a, 'b> {
         .takes_value(true)
         .value_name("MINT_ADDRESS")
         .validator(is_valid_pubkey)
-        .requires(SIGN_ONLY_ARG.name)
-        .requires(BLOCKHASH_ARG.name)
         .help(MINT_ADDRESS_ARG.help)
 }
 
@@ -192,8 +195,6 @@ pub fn mint_decimals_arg<'a, 'b>() -> Arg<'a, 'b> {
         .takes_value(true)
         .value_name("MINT_DECIMALS")
         .validator(is_mint_decimals)
-        .requires(SIGN_ONLY_ARG.name)
-        .requires(BLOCKHASH_ARG.name)
         .help(MINT_DECIMALS_ARG.help)
 }
 
@@ -214,8 +215,6 @@ pub fn delegate_address_arg<'a, 'b>() -> Arg<'a, 'b> {
         .takes_value(true)
         .value_name("DELEGATE_ADDRESS")
         .validator(is_valid_pubkey)
-        .requires(SIGN_ONLY_ARG.name)
-        .requires(BLOCKHASH_ARG.name)
         .help(DELEGATE_ADDRESS_ARG.help)
 }
 
@@ -366,10 +365,16 @@ fn token_client_from_config(
         config.fee_payer()?.clone(),
     );
 
-    if let (Some(nonce_account), Some(nonce_authority)) =
-        (config.nonce_account, &config.nonce_authority)
-    {
-        Ok(token.with_nonce(&nonce_account, Arc::clone(nonce_authority)))
+    if let (Some(nonce_account), Some(nonce_authority), Some(nonce_blockhash)) = (
+        config.nonce_account,
+        &config.nonce_authority,
+        config.nonce_blockhash,
+    ) {
+        Ok(token.with_nonce(
+            &nonce_account,
+            Arc::clone(nonce_authority),
+            &nonce_blockhash,
+        ))
     } else {
         Ok(token)
     }
@@ -384,10 +389,16 @@ fn native_token_client_from_config(
         config.fee_payer()?.clone(),
     );
 
-    if let (Some(nonce_account), Some(nonce_authority)) =
-        (config.nonce_account, &config.nonce_authority)
-    {
-        Ok(token.with_nonce(&nonce_account, Arc::clone(nonce_authority)))
+    if let (Some(nonce_account), Some(nonce_authority), Some(nonce_blockhash)) = (
+        config.nonce_account,
+        &config.nonce_authority,
+        config.nonce_blockhash,
+    ) {
+        Ok(token.with_nonce(
+            &nonce_account,
+            Arc::clone(nonce_authority),
+            &nonce_blockhash,
+        ))
     } else {
         Ok(token)
     }
@@ -407,6 +418,7 @@ async fn command_create_token(
     rate_bps: Option<i16>,
     default_account_state: Option<AccountState>,
     transfer_fee: Option<(u16, u64)>,
+    confidential_transfer_auto_approve: Option<bool>,
     bulk_signers: Vec<Arc<dyn Signer>>,
 ) -> CommandResult {
     println_display(
@@ -460,6 +472,14 @@ async fn command_create_token(
             withdraw_withheld_authority: Some(authority),
             transfer_fee_basis_points,
             maximum_fee,
+        });
+    }
+
+    if let Some(auto_approve) = confidential_transfer_auto_approve {
+        extensions.push(ExtensionInitializationParams::ConfidentialTransferMint {
+            authority: Some(authority),
+            auto_approve_new_accounts: auto_approve,
+            auditor_encryption_pubkey: None,
         });
     }
 
@@ -760,6 +780,11 @@ async fn command_authorize(
         AuthorityType::InterestRate => "interest rate authority",
         AuthorityType::PermanentDelegate => "permanent delegate",
         AuthorityType::ConfidentialTransferMint => "confidential transfer mint authority",
+        AuthorityType::TransferHookProgramId => "transfer hook program id authority",
+        AuthorityType::ConfidentialTransferFeeConfig => {
+            "confidential transfer fee config authority"
+        }
+        AuthorityType::MetadataPointer => "metadata pointer authority",
     };
 
     let (mint_pubkey, previous_authority) = if !config.sign_only {
@@ -823,7 +848,54 @@ async fn command_authorize(
                         ))
                     }
                 }
-                AuthorityType::ConfidentialTransferMint => unimplemented!(),
+                AuthorityType::ConfidentialTransferMint => {
+                    if let Ok(confidential_transfer_mint) =
+                        mint.get_extension::<ConfidentialTransferMint>()
+                    {
+                        Ok(COption::<Pubkey>::from(
+                            confidential_transfer_mint.authority,
+                        ))
+                    } else {
+                        Err(format!(
+                            "Mint `{}` does not support confidential transfers",
+                            account
+                        ))
+                    }
+                }
+                AuthorityType::TransferHookProgramId => {
+                    if let Ok(transfer_hook) = mint.get_extension::<TransferHook>() {
+                        Ok(COption::<Pubkey>::from(transfer_hook.authority))
+                    } else {
+                        Err(format!(
+                            "Mint `{}` does not support a transfer hook",
+                            account
+                        ))
+                    }
+                }
+                AuthorityType::ConfidentialTransferFeeConfig => {
+                    if let Ok(confidential_transfer_fee_config) =
+                        mint.get_extension::<ConfidentialTransferFeeConfig>()
+                    {
+                        Ok(COption::<Pubkey>::from(
+                            confidential_transfer_fee_config.authority,
+                        ))
+                    } else {
+                        Err(format!(
+                            "Mint `{}` does not support confidential transfer fees",
+                            account
+                        ))
+                    }
+                }
+                AuthorityType::MetadataPointer => {
+                    if let Ok(extension) = mint.get_extension::<MetadataPointer>() {
+                        Ok(COption::<Pubkey>::from(extension.authority))
+                    } else {
+                        Err(format!(
+                            "Mint `{}` does not support a metadata pointer",
+                            account
+                        ))
+                    }
+                }
             }?;
 
             Ok((account, previous_authority))
@@ -858,7 +930,10 @@ async fn command_authorize(
                 | AuthorityType::WithheldWithdraw
                 | AuthorityType::InterestRate
                 | AuthorityType::PermanentDelegate
-                | AuthorityType::ConfidentialTransferMint => Err(format!(
+                | AuthorityType::ConfidentialTransferMint
+                | AuthorityType::TransferHookProgramId
+                | AuthorityType::ConfidentialTransferFeeConfig
+                | AuthorityType::MetadataPointer => Err(format!(
                     "Authority type `{}` not supported for SPL Token accounts",
                     auth_str
                 )),
@@ -2035,6 +2110,44 @@ async fn command_sync_native(config: &Config<'_>, native_account_address: Pubkey
     })
 }
 
+async fn command_withdraw_excess_lamports(
+    config: &Config<'_>,
+    source_account: Pubkey,
+    destination_account: Pubkey,
+    authority: Pubkey,
+    bulk_signers: Vec<Arc<dyn Signer>>,
+) -> CommandResult {
+    // default is safe here because withdraw_excess_lamports doesn't use it
+    let token = token_client_from_config(config, &Pubkey::default(), None)?;
+    println_display(
+        config,
+        format!(
+            "Withdrawing excess lamports\n  Sender: {}\n  Destination: {}",
+            source_account, destination_account
+        ),
+    );
+
+    let res = token
+        .withdraw_excess_lamports(
+            &source_account,
+            &destination_account,
+            &authority,
+            &bulk_signers,
+        )
+        .await?;
+
+    let tx_return = finish_tx(config, &res, false).await?;
+
+    Ok(match tx_return {
+        TransactionReturnData::CliSignature(signature) => {
+            config.output_format.formatted_string(&signature)
+        }
+        TransactionReturnData::CliSignOnlyData(sign_only_data) => {
+            config.output_format.formatted_string(&sign_only_data)
+        }
+    })
+}
+
 // both enables and disables required transfer memos, via enable_memos bool
 async fn command_required_transfer_memos(
     config: &Config<'_>,
@@ -2322,11 +2435,17 @@ impl offline::ArgsConfig for SignOnlyNeedsFullMintSpec {
     fn sign_only_arg<'a, 'b>(&self, arg: Arg<'a, 'b>) -> Arg<'a, 'b> {
         arg.requires_all(&[MINT_ADDRESS_ARG.name, MINT_DECIMALS_ARG.name])
     }
+    fn signer_arg<'a, 'b>(&self, arg: Arg<'a, 'b>) -> Arg<'a, 'b> {
+        arg.requires_all(&[MINT_ADDRESS_ARG.name, MINT_DECIMALS_ARG.name])
+    }
 }
 
 struct SignOnlyNeedsMintDecimals {}
 impl offline::ArgsConfig for SignOnlyNeedsMintDecimals {
     fn sign_only_arg<'a, 'b>(&self, arg: Arg<'a, 'b>) -> Arg<'a, 'b> {
+        arg.requires_all(&[MINT_DECIMALS_ARG.name])
+    }
+    fn signer_arg<'a, 'b>(&self, arg: Arg<'a, 'b>) -> Arg<'a, 'b> {
         arg.requires_all(&[MINT_DECIMALS_ARG.name])
     }
 }
@@ -2336,11 +2455,17 @@ impl offline::ArgsConfig for SignOnlyNeedsMintAddress {
     fn sign_only_arg<'a, 'b>(&self, arg: Arg<'a, 'b>) -> Arg<'a, 'b> {
         arg.requires_all(&[MINT_ADDRESS_ARG.name])
     }
+    fn signer_arg<'a, 'b>(&self, arg: Arg<'a, 'b>) -> Arg<'a, 'b> {
+        arg.requires_all(&[MINT_ADDRESS_ARG.name])
+    }
 }
 
 struct SignOnlyNeedsDelegateAddress {}
 impl offline::ArgsConfig for SignOnlyNeedsDelegateAddress {
     fn sign_only_arg<'a, 'b>(&self, arg: Arg<'a, 'b>) -> Arg<'a, 'b> {
+        arg.requires_all(&[DELEGATE_ADDRESS_ARG.name])
+    }
+    fn signer_arg<'a, 'b>(&self, arg: Arg<'a, 'b>) -> Arg<'a, 'b> {
         arg.requires_all(&[DELEGATE_ADDRESS_ARG.name])
     }
 }
@@ -2528,6 +2653,20 @@ fn app<'a, 'b>(
                             "Enable the mint authority to be permanent delegate for this mint"
                         ),
                 )
+                .arg(
+                    Arg::with_name("enable_confidential_transfers")
+                        .long("enable-confidential-transfers")
+                        .value_names(&["APPROVE-POLICY"])
+                        .takes_value(true)
+                        .possible_values(&["auto", "manual"])
+                        .help(
+                            "Enable accounts to make confidential transfers. If \"auto\" \
+                            is selected, then accounts are automatically approved to make \
+                            confidential transfers. If \"manual\" is selected, then the \
+                            confidential transfer mint authority must approve each account \
+                            before it can make confidential transfers."
+                        )
+                )
                 .nonce_args(true)
                 .arg(memo_arg())
         )
@@ -2652,13 +2791,14 @@ fn app<'a, 'b>(
                         .possible_values(&[
                             "mint", "freeze", "owner", "close",
                             "close-mint", "transfer-fee-config", "withheld-withdraw",
-                            "interest-rate", "permanent-delegate",
+                            "interest-rate", "permanent-delegate", "confidential-transfer-mint"
                         ])
                         .index(2)
                         .required(true)
                         .help("The new authority type. \
-                            Token mints support `mint` and `freeze` authorities;\
-                            Token accounts support `owner` and `close` authorities."),
+                            Token mints support `mint`, `freeze`, and mint extension authorities; \
+                            Token accounts support `owner`, `close`, and account extension \
+                            authorities."),
                 )
                 .arg(
                     Arg::with_name("new_authority")
@@ -3546,6 +3686,29 @@ fn app<'a, 'b>(
                     )
                 )
                 .arg(mint_decimals_arg())
+                .offline_args_config(&SignOnlyNeedsMintDecimals{})
+        )
+        .subcommand(
+            SubCommand::with_name(CommandName::WithdrawExcessLamports.into())
+                .about("Withdraw lamports from a Token Program owned account")
+                .arg(
+                    Arg::with_name("from")
+                        .validator(is_valid_pubkey)
+                        .value_name("SOURCE_ACCOUNT_ADDRESS")
+                        .takes_value(true)
+                        .required(true)
+                        .help("Specify the address of the account to recover lamports from"),
+                )
+                .arg(
+                    Arg::with_name("recipient")
+                        .validator(is_valid_pubkey)
+                        .value_name("REFUND_ACCOUNT_ADDRESS")
+                        .takes_value(true)
+                        .required(true)
+                        .help("Specify the address of the account to send lamports to"),
+                )
+                .arg(owner_address_arg())
+                .arg(multisig_signer_arg())
         )
 }
 
@@ -3634,6 +3797,10 @@ async fn process_command<'a>(
                         _ => unreachable!(),
                     });
 
+            let confidential_transfer_auto_approve = arg_matches
+                .value_of("enable_confidential_transfers")
+                .map(|b| b == "auto");
+
             command_create_token(
                 config,
                 decimals,
@@ -3647,6 +3814,7 @@ async fn process_command<'a>(
                 rate_bps,
                 default_account_state,
                 transfer_fee,
+                confidential_transfer_auto_approve,
                 bulk_signers,
             )
             .await
@@ -3727,6 +3895,10 @@ async fn process_command<'a>(
                 "withheld-withdraw" => AuthorityType::WithheldWithdraw,
                 "interest-rate" => AuthorityType::InterestRate,
                 "permanent-delegate" => AuthorityType::PermanentDelegate,
+                "confidential-transfer-mint" => AuthorityType::ConfidentialTransferMint,
+                "transfer-hook-program-id" => AuthorityType::TransferHookProgramId,
+                "confidential-transfer-fee" => AuthorityType::ConfidentialTransferFeeConfig,
+                "metadata-pointer" => AuthorityType::MetadataPointer,
                 _ => unreachable!(),
             };
 
@@ -4212,7 +4384,6 @@ async fn process_command<'a>(
             let source_accounts = arg_matches
                 .values_of("source")
                 .unwrap_or_default()
-                .into_iter()
                 .map(|s| Pubkey::from_str(s).unwrap_or_else(print_error_and_exit))
                 .collect::<Vec<_>>();
             command_withdraw_withheld_tokens(
@@ -4247,6 +4418,20 @@ async fn process_command<'a>(
                 bulk_signers,
             )
             .await
+        }
+        (CommandName::WithdrawExcessLamports, arg_matches) => {
+            let (signer, authority) =
+                config.signer_or_default(arg_matches, "owner", &mut wallet_manager);
+            if config.multisigner_pubkeys.is_empty() {
+                push_signer_with_dedup(signer, &mut bulk_signers);
+            }
+
+            let source = config.pubkey_or_default(arg_matches, "from", &mut wallet_manager)?;
+            let destination =
+                config.pubkey_or_default(arg_matches, "recipient", &mut wallet_manager)?;
+
+            command_withdraw_excess_lamports(config, source, destination, authority, bulk_signers)
+                .await
         }
     }
 }
@@ -4308,14 +4493,14 @@ mod tests {
         super::*,
         serial_test::serial,
         solana_sdk::{
-            bpf_loader,
+            bpf_loader_upgradeable,
             hash::Hash,
             program_pack::Pack,
             signature::{write_keypair_file, Keypair, Signer},
             system_instruction,
             transaction::Transaction,
         },
-        solana_test_validator::{ProgramInfo, TestValidator, TestValidatorGenesis},
+        solana_test_validator::{TestValidator, TestValidatorGenesis, UpgradeableProgramInfo},
         spl_token_2022::{extension::non_transferable::NonTransferable, state::Multisig},
         spl_token_client::client::{
             ProgramClient, ProgramOfflineClient, ProgramRpcClient, ProgramRpcClientSendTransaction,
@@ -4333,21 +4518,24 @@ mod tests {
     async fn new_validator_for_test() -> (TestValidator, Keypair) {
         solana_logger::setup();
         let mut test_validator_genesis = TestValidatorGenesis::default();
-        test_validator_genesis.add_programs_with_path(&[
-            ProgramInfo {
+        test_validator_genesis.add_upgradeable_programs_with_path(&[
+            UpgradeableProgramInfo {
                 program_id: spl_token::id(),
-                loader: bpf_loader::id(),
+                loader: bpf_loader_upgradeable::id(),
                 program_path: PathBuf::from("../../target/deploy/spl_token.so"),
+                upgrade_authority: Pubkey::new_unique(),
             },
-            ProgramInfo {
+            UpgradeableProgramInfo {
                 program_id: spl_associated_token_account::id(),
-                loader: bpf_loader::id(),
+                loader: bpf_loader_upgradeable::id(),
                 program_path: PathBuf::from("../../target/deploy/spl_associated_token_account.so"),
+                upgrade_authority: Pubkey::new_unique(),
             },
-            ProgramInfo {
+            UpgradeableProgramInfo {
                 program_id: spl_token_2022::id(),
-                loader: bpf_loader::id(),
+                loader: bpf_loader_upgradeable::id(),
                 program_path: PathBuf::from("../../target/deploy/spl_token_2022.so"),
+                upgrade_authority: Pubkey::new_unique(),
             },
         ]);
         test_validator_genesis.start_async().await
@@ -4372,6 +4560,7 @@ mod tests {
             default_signer: Some(Arc::new(clone_keypair(payer))),
             nonce_account: None,
             nonce_authority: None,
+            nonce_blockhash: None,
             sign_only: false,
             dump_transaction_message: false,
             multisigner_pubkeys: vec![],
@@ -4398,6 +4587,7 @@ mod tests {
             default_signer: None,
             nonce_account: None,
             nonce_authority: None,
+            nonce_blockhash: None,
             sign_only: false,
             dump_transaction_message: false,
             multisigner_pubkeys: vec![],
@@ -4475,6 +4665,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             bulk_signers,
         )
         .await
@@ -4503,6 +4694,7 @@ mod tests {
             false,
             None,
             Some(rate_bps),
+            None,
             None,
             None,
             bulk_signers,
@@ -5889,6 +6081,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             bulk_signers,
         )
         .await
@@ -5935,6 +6128,7 @@ mod tests {
             false,
             false,
             true,
+            None,
             None,
             None,
             None,
@@ -6009,6 +6203,7 @@ mod tests {
             false,
             false,
             true,
+            None,
             None,
             None,
             None,
@@ -6368,6 +6563,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             bulk_signers,
         )
         .await
@@ -6423,6 +6619,7 @@ mod tests {
             None,
             None,
             Some(AccountState::Frozen),
+            None,
             None,
             bulk_signers,
         )
@@ -6493,6 +6690,7 @@ mod tests {
             None,
             None,
             Some((transfer_fee_basis_points, maximum_fee)),
+            None,
             bulk_signers,
         )
         .await
@@ -6734,6 +6932,75 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn confidential_transfer() {
+        use spl_token_2022::pod::EncryptionPubkey;
+
+        let (test_validator, payer) = new_validator_for_test().await;
+        let config =
+            test_config_with_default_signer(&test_validator, &payer, &spl_token_2022::id());
+
+        let token_keypair = Keypair::new();
+        let token_pubkey = token_keypair.pubkey();
+        let bulk_signers: Vec<Arc<dyn Signer>> =
+            vec![Arc::new(clone_keypair(&payer)), Arc::new(token_keypair)];
+        let confidential_transfer_mint_authority = payer.pubkey();
+        let auto_approve = true;
+
+        command_create_token(
+            &config,
+            TEST_DECIMALS,
+            token_pubkey,
+            payer.pubkey(),
+            false,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            Some(auto_approve),
+            bulk_signers,
+        )
+        .await
+        .unwrap();
+
+        let account = config.rpc_client.get_account(&token_pubkey).await.unwrap();
+        let test_mint = StateWithExtensionsOwned::<Mint>::unpack(account.data).unwrap();
+        let extension = test_mint
+            .get_extension::<ConfidentialTransferMint>()
+            .unwrap();
+
+        assert_eq!(
+            Option::<Pubkey>::from(extension.authority),
+            Some(confidential_transfer_mint_authority),
+        );
+        assert_eq!(
+            bool::from(extension.auto_approve_new_accounts),
+            auto_approve,
+        );
+        assert_eq!(
+            Option::<EncryptionPubkey>::from(extension.auditor_encryption_pubkey),
+            None,
+        );
+
+        process_test_command(
+            &config,
+            &payer,
+            &[
+                "spl-token",
+                CommandName::Authorize.into(),
+                &token_pubkey.to_string(),
+                "confidential-transfer-mint",
+                "--disable",
+            ],
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn multisig_transfer() {
         let (test_validator, payer) = new_validator_for_test().await;
         let m = 3;
@@ -6906,5 +7173,256 @@ mod tests {
             assert!(!absent_signers.contains(&destination.to_string()));
             assert!(!absent_signers.contains(&token.to_string()));
         }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn withdraw_excess_lamports_from_multisig() {
+        let (test_validator, payer) = new_validator_for_test().await;
+        let m = 3;
+        let n = 5u8;
+        // need to add "payer" to make the config provide the right signer
+        let (multisig_members, multisig_paths): (Vec<_>, Vec<_>) =
+            std::iter::once(clone_keypair(&payer))
+                .chain(std::iter::repeat_with(Keypair::new).take((n - 2) as usize))
+                .map(|s| {
+                    let keypair_file = NamedTempFile::new().unwrap();
+                    write_keypair_file(&s, &keypair_file).unwrap();
+                    (s.pubkey(), keypair_file)
+                })
+                .unzip();
+
+        let fee_payer_keypair_file = NamedTempFile::new().unwrap();
+        write_keypair_file(&payer, &fee_payer_keypair_file).unwrap();
+
+        let owner_keypair_file = NamedTempFile::new().unwrap();
+        write_keypair_file(&payer, &owner_keypair_file).unwrap();
+
+        let program_id = &spl_token_2022::id();
+        let config = test_config_with_default_signer(&test_validator, &payer, program_id);
+
+        let multisig = Arc::new(Keypair::new());
+        let multisig_pubkey = multisig.pubkey();
+
+        // add the multisig as a member to itself, make it self-owned
+        let multisig_members = std::iter::once(multisig_pubkey)
+            .chain(multisig_members.iter().cloned())
+            .collect::<Vec<_>>();
+        let multisig_path = NamedTempFile::new().unwrap();
+        write_keypair_file(&multisig, &multisig_path).unwrap();
+        let multisig_paths = std::iter::once(&multisig_path)
+            .chain(multisig_paths.iter())
+            .collect::<Vec<_>>();
+
+        command_create_multisig(&config, multisig, m, multisig_members)
+            .await
+            .unwrap();
+
+        let account = config
+            .rpc_client
+            .get_account(&multisig_pubkey)
+            .await
+            .unwrap();
+        let multisig = Multisig::unpack(&account.data).unwrap();
+        assert_eq!(multisig.m, m);
+        assert_eq!(multisig.n, n);
+
+        let receiver = Keypair::new();
+        let excess_lamports = 4000 * 1_000_000_000;
+
+        config
+            .rpc_client
+            .send_and_confirm_transaction(&Transaction::new_signed_with_payer(
+                &[system_instruction::transfer(
+                    &payer.pubkey(),
+                    &multisig_pubkey,
+                    excess_lamports,
+                )],
+                Some(&payer.pubkey()),
+                &[&payer],
+                config.rpc_client.get_latest_blockhash().await.unwrap(),
+            ))
+            .await
+            .unwrap();
+
+        exec_test_cmd(
+            &config,
+            &[
+                "spl-token",
+                CommandName::WithdrawExcessLamports.into(),
+                &multisig_pubkey.to_string(),
+                &receiver.pubkey().to_string(),
+                "--owner",
+                &multisig_pubkey.to_string(),
+                "--multisig-signer",
+                multisig_paths[0].path().to_str().unwrap(),
+                "--multisig-signer",
+                multisig_paths[1].path().to_str().unwrap(),
+                "--multisig-signer",
+                multisig_paths[2].path().to_str().unwrap(),
+                "--fee-payer",
+                fee_payer_keypair_file.path().to_str().unwrap(),
+                "--program-id",
+                &program_id.to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            excess_lamports,
+            config
+                .rpc_client
+                .get_balance(&receiver.pubkey())
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn withdraw_excess_lamports_from_mint() {
+        let (test_validator, payer) = new_validator_for_test().await;
+        let program_id = &spl_token_2022::id();
+        let config = test_config_with_default_signer(&test_validator, &payer, program_id);
+        let owner_keypair_file = NamedTempFile::new().unwrap();
+        write_keypair_file(&payer, &owner_keypair_file).unwrap();
+
+        let receiver = Keypair::new();
+
+        let token_keypair = Keypair::new();
+        let token_path = NamedTempFile::new().unwrap();
+        write_keypair_file(&token_keypair, &token_path).unwrap();
+        let token_pubkey = token_keypair.pubkey();
+
+        process_test_command(
+            &config,
+            &payer,
+            &[
+                "spl-token",
+                CommandName::CreateToken.into(),
+                token_path.path().to_str().unwrap(),
+                "--program-id",
+                &program_id.to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let excess_lamports = 4000 * 1_000_000_000;
+        config
+            .rpc_client
+            .send_and_confirm_transaction(&Transaction::new_signed_with_payer(
+                &[system_instruction::transfer(
+                    &payer.pubkey(),
+                    &token_pubkey,
+                    excess_lamports,
+                )],
+                Some(&payer.pubkey()),
+                &[&payer],
+                config.rpc_client.get_latest_blockhash().await.unwrap(),
+            ))
+            .await
+            .unwrap();
+
+        exec_test_cmd(
+            &config,
+            &[
+                "spl-token",
+                CommandName::WithdrawExcessLamports.into(),
+                &token_pubkey.to_string(),
+                &receiver.pubkey().to_string(),
+                "--owner",
+                owner_keypair_file.path().to_str().unwrap(),
+                "--program-id",
+                &program_id.to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            excess_lamports,
+            config
+                .rpc_client
+                .get_balance(&receiver.pubkey())
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn withdraw_excess_lamports_from_account() {
+        let (test_validator, payer) = new_validator_for_test().await;
+        let program_id = &spl_token_2022::id();
+        let config = test_config_with_default_signer(&test_validator, &payer, program_id);
+        let owner_keypair_file = NamedTempFile::new().unwrap();
+        write_keypair_file(&payer, &owner_keypair_file).unwrap();
+
+        let receiver = Keypair::new();
+
+        let token_keypair = Keypair::new();
+        let token_path = NamedTempFile::new().unwrap();
+        write_keypair_file(&token_keypair, &token_path).unwrap();
+        let token_pubkey = token_keypair.pubkey();
+
+        process_test_command(
+            &config,
+            &payer,
+            &[
+                "spl-token",
+                CommandName::CreateToken.into(),
+                token_path.path().to_str().unwrap(),
+                "--program-id",
+                &program_id.to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let excess_lamports = 4000 * 1_000_000_000;
+        let token_account =
+            create_associated_account(&config, &payer, &token_pubkey, &payer.pubkey()).await;
+
+        config
+            .rpc_client
+            .send_and_confirm_transaction(&Transaction::new_signed_with_payer(
+                &[system_instruction::transfer(
+                    &payer.pubkey(),
+                    &token_account,
+                    excess_lamports,
+                )],
+                Some(&payer.pubkey()),
+                &[&payer],
+                config.rpc_client.get_latest_blockhash().await.unwrap(),
+            ))
+            .await
+            .unwrap();
+
+        exec_test_cmd(
+            &config,
+            &[
+                "spl-token",
+                CommandName::WithdrawExcessLamports.into(),
+                &token_account.to_string(),
+                &receiver.pubkey().to_string(),
+                "--owner",
+                owner_keypair_file.path().to_str().unwrap(),
+                "--program-id",
+                &program_id.to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            excess_lamports,
+            config
+                .rpc_client
+                .get_balance(&receiver.pubkey())
+                .await
+                .unwrap()
+        );
     }
 }

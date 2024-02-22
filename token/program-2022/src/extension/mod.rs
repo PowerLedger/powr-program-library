@@ -5,15 +5,20 @@ use {
         error::TokenError,
         extension::{
             confidential_transfer::{ConfidentialTransferAccount, ConfidentialTransferMint},
+            confidential_transfer_fee::{
+                ConfidentialTransferFeeAmount, ConfidentialTransferFeeConfig,
+            },
             cpi_guard::CpiGuard,
             default_account_state::DefaultAccountState,
             immutable_owner::ImmutableOwner,
             interest_bearing_mint::InterestBearingConfig,
             memo_transfer::MemoTransfer,
+            metadata_pointer::MetadataPointer,
             mint_close_authority::MintCloseAuthority,
             non_transferable::{NonTransferable, NonTransferableAccount},
             permanent_delegate::PermanentDelegate,
             transfer_fee::{TransferFeeAmount, TransferFeeConfig},
+            transfer_hook::{TransferHook, TransferHookAccount},
         },
         pod::*,
         state::{Account, Mint, Multisig},
@@ -35,6 +40,8 @@ use serde::{Deserialize, Serialize};
 
 /// Confidential Transfer extension
 pub mod confidential_transfer;
+/// Confidential Transfer Fee extension
+pub mod confidential_transfer_fee;
 /// CPI Guard extension
 pub mod cpi_guard;
 /// Default Account State extension
@@ -45,6 +52,8 @@ pub mod immutable_owner;
 pub mod interest_bearing_mint;
 /// Memo Transfer extension
 pub mod memo_transfer;
+/// Metadata Pointer extension
+pub mod metadata_pointer;
 /// Mint Close Authority extension
 pub mod mint_close_authority;
 /// Non Transferable extension
@@ -55,6 +64,8 @@ pub mod permanent_delegate;
 pub mod reallocate;
 /// Transfer Fee extension
 pub mod transfer_fee;
+/// Transfer Hook extension
+pub mod transfer_hook;
 
 /// Length in TLV structure
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
@@ -288,7 +299,7 @@ pub trait BaseStateWithExtensions<S: BaseState> {
 }
 
 /// Encapsulates owned immutable base state data (mint or account) with possible extensions
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StateWithExtensionsOwned<S: BaseState> {
     /// Unpacked base data
     pub base: S,
@@ -534,6 +545,9 @@ impl<'data, S: BaseState> StateWithExtensionsMut<'data, S> {
             ExtensionType::NonTransferableAccount => self
                 .init_extension::<NonTransferableAccount>(true)
                 .map(|_| ()),
+            ExtensionType::TransferHookAccount => {
+                self.init_extension::<TransferHookAccount>(true).map(|_| ())
+            }
             // ConfidentialTransfers are currently opt-in only, so this is a no-op for extra safety
             // on InitializeAccount
             ExtensionType::ConfidentialTransferAccount => Ok(()),
@@ -646,6 +660,16 @@ pub enum ExtensionType {
     PermanentDelegate,
     /// Indicates that the tokens in this account belong to a non-transferable mint
     NonTransferableAccount,
+    /// Mint requires a CPI to a program implementing the "transfer hook" interface
+    TransferHook,
+    /// Indicates that the tokens in this account belong to a mint with a transfer hook
+    TransferHookAccount,
+    /// Includes encrypted withheld fees and the encryption public that they are encrypted under
+    ConfidentialTransferFeeConfig,
+    /// Includes confidential withheld transfer fees
+    ConfidentialTransferFeeAmount,
+    /// Mint contains a pointer to another account (or the same account) that holds metadata
+    MetadataPointer,
     /// Padding extension used to make an account exactly Multisig::LEN, used for testing
     #[cfg(test)]
     AccountPaddingTest = u16::MAX - 1,
@@ -689,6 +713,15 @@ impl ExtensionType {
             ExtensionType::CpiGuard => pod_get_packed_len::<CpiGuard>(),
             ExtensionType::PermanentDelegate => pod_get_packed_len::<PermanentDelegate>(),
             ExtensionType::NonTransferableAccount => pod_get_packed_len::<NonTransferableAccount>(),
+            ExtensionType::TransferHook => pod_get_packed_len::<TransferHook>(),
+            ExtensionType::TransferHookAccount => pod_get_packed_len::<TransferHookAccount>(),
+            ExtensionType::ConfidentialTransferFeeConfig => {
+                pod_get_packed_len::<ConfidentialTransferFeeConfig>()
+            }
+            ExtensionType::ConfidentialTransferFeeAmount => {
+                pod_get_packed_len::<ConfidentialTransferFeeAmount>()
+            }
+            ExtensionType::MetadataPointer => pod_get_packed_len::<MetadataPointer>(),
             #[cfg(test)]
             ExtensionType::AccountPaddingTest => pod_get_packed_len::<AccountPaddingTest>(),
             #[cfg(test)]
@@ -746,13 +779,18 @@ impl ExtensionType {
             | ExtensionType::DefaultAccountState
             | ExtensionType::NonTransferable
             | ExtensionType::InterestBearingConfig
-            | ExtensionType::PermanentDelegate => AccountType::Mint,
+            | ExtensionType::PermanentDelegate
+            | ExtensionType::TransferHook
+            | ExtensionType::ConfidentialTransferFeeConfig
+            | ExtensionType::MetadataPointer => AccountType::Mint,
             ExtensionType::ImmutableOwner
             | ExtensionType::TransferFeeAmount
             | ExtensionType::ConfidentialTransferAccount
             | ExtensionType::MemoTransfer
             | ExtensionType::NonTransferableAccount
-            | ExtensionType::CpiGuard => AccountType::Account,
+            | ExtensionType::TransferHookAccount
+            | ExtensionType::CpiGuard
+            | ExtensionType::ConfidentialTransferFeeAmount => AccountType::Account,
             #[cfg(test)]
             ExtensionType::AccountPaddingTest => AccountType::Account,
             #[cfg(test)]
@@ -772,6 +810,9 @@ impl ExtensionType {
                 ExtensionType::NonTransferable => {
                     account_extension_types.push(ExtensionType::NonTransferableAccount);
                 }
+                ExtensionType::TransferHook => {
+                    account_extension_types.push(ExtensionType::TransferHookAccount);
+                }
                 #[cfg(test)]
                 ExtensionType::MintPaddingTest => {
                     account_extension_types.push(ExtensionType::AccountPaddingTest);
@@ -780,6 +821,37 @@ impl ExtensionType {
             }
         }
         account_extension_types
+    }
+
+    /// Check for invalid combination of mint extensions
+    pub fn check_for_invalid_mint_extension_combinations(
+        mint_extension_types: &[Self],
+    ) -> Result<(), TokenError> {
+        let mut transfer_fee_config = false;
+        let mut confidential_transfer_mint = false;
+        let mut confidential_transfer_fee_config = false;
+
+        for extension_type in mint_extension_types {
+            match extension_type {
+                ExtensionType::TransferFeeConfig => transfer_fee_config = true,
+                ExtensionType::ConfidentialTransferMint => confidential_transfer_mint = true,
+                ExtensionType::ConfidentialTransferFeeConfig => {
+                    confidential_transfer_fee_config = true
+                }
+                _ => (),
+            }
+        }
+
+        if confidential_transfer_fee_config && !(transfer_fee_config && confidential_transfer_mint)
+        {
+            return Err(TokenError::InvalidExtensionCombination);
+        }
+
+        if transfer_fee_config && confidential_transfer_mint && !confidential_transfer_fee_config {
+            return Err(TokenError::InvalidExtensionCombination);
+        }
+
+        Ok(())
     }
 }
 
@@ -869,7 +941,8 @@ mod test {
         let state = StateWithExtensions::<Mint>::unpack(MINT_WITH_EXTENSION).unwrap();
         assert_eq!(state.base, TEST_MINT);
         let extension = state.get_extension::<MintCloseAuthority>().unwrap();
-        let close_authority = OptionalNonZeroPubkey::try_from(Some(Pubkey::new(&[1; 32]))).unwrap();
+        let close_authority =
+            OptionalNonZeroPubkey::try_from(Some(Pubkey::new_from_array([1; 32]))).unwrap();
         assert_eq!(extension.close_authority, close_authority);
         assert_eq!(
             state.get_extension::<TransferFeeConfig>(),
@@ -1010,7 +1083,8 @@ mod test {
         );
 
         // success write extension
-        let close_authority = OptionalNonZeroPubkey::try_from(Some(Pubkey::new(&[1; 32]))).unwrap();
+        let close_authority =
+            OptionalNonZeroPubkey::try_from(Some(Pubkey::new_from_array([1; 32]))).unwrap();
         let extension = state.init_extension::<MintCloseAuthority>(true).unwrap();
         extension.close_authority = close_authority;
         assert_eq!(
@@ -1159,7 +1233,8 @@ mod test {
 
         let mut state = StateWithExtensionsMut::<Mint>::unpack_uninitialized(&mut buffer).unwrap();
         // write extensions
-        let close_authority = OptionalNonZeroPubkey::try_from(Some(Pubkey::new(&[1; 32]))).unwrap();
+        let close_authority =
+            OptionalNonZeroPubkey::try_from(Some(Pubkey::new_from_array([1; 32]))).unwrap();
         let extension = state.init_extension::<MintCloseAuthority>(true).unwrap();
         extension.close_authority = close_authority;
 
@@ -1203,7 +1278,8 @@ mod test {
         extension.older_transfer_fee = mint_transfer_fee.older_transfer_fee;
         extension.newer_transfer_fee = mint_transfer_fee.newer_transfer_fee;
 
-        let close_authority = OptionalNonZeroPubkey::try_from(Some(Pubkey::new(&[1; 32]))).unwrap();
+        let close_authority =
+            OptionalNonZeroPubkey::try_from(Some(Pubkey::new_from_array([1; 32]))).unwrap();
         let extension = state.init_extension::<MintCloseAuthority>(true).unwrap();
         extension.close_authority = close_authority;
 
